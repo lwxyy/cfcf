@@ -1,37 +1,34 @@
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-    
-    // 将请求的目标地址修改为你的 SAP BTP 地址
-    const targetUrl = "https://sap-jprsqjtq.cfapps.jp01.hana.ondemand.com" + url.pathname + url.search;
+export async function onRequest(context) {
+  const url = new URL(context.request.url);
+  const targetHost = "sap-jprsqjtq.cfapps.jp01.hana.ondemand.com";
+  
+  // 1. 构造发往 SAP 的请求地址
+  const targetUrl = `https://${targetHost}${url.pathname}${url.search}`;
 
-    // 复制原始请求的 Header，但需要修改 Host
-    const newHeaders = new Headers(request.headers);
-    newHeaders.set("Host", "sap-jprsqjtq.cfapps.jp01.hana.ondemand.com");
-    newHeaders.set("Referer", "https://sap-jprsqjtq.cfapps.jp01.hana.ondemand.com/");
+  // 2. 复制请求头并修改 Host，防止被 SAP 拦截
+  const newHeaders = new Headers(context.request.headers);
+  newHeaders.set("Host", targetHost);
+  newHeaders.set("Referer", `https://${targetHost}/`);
 
-    // 发起转发请求
-    const response = await fetch(targetUrl, {
-      method: request.method,
-      headers: newHeaders,
-      body: request.body,
-      redirect: "manual" // 建议手动处理重定向，避免域名跳回原地址
-    });
+  // 3. 抓取 SAP 页面内容
+  const response = await fetch(targetUrl, {
+    method: context.request.method,
+    headers: newHeaders,
+    redirect: "manual" // 手动处理重定向
+  });
 
-    // 处理响应，如果是重定向（301/302），需要将 Location 改回你的自定义域名
-    if ([301, 302, 307, 308].includes(response.status)) {
-      const location = response.headers.get("Location");
-      if (location && location.includes("sap-jprsqjtq.cfapps.jp01.hana.ondemand.com")) {
-        const newLocation = location.replace("sap-jprsqjtq.cfapps.jp01.hana.ondemand.com", url.host);
-        const resHeaders = new Headers(response.headers);
-        resHeaders.set("Location", newLocation);
-        return new Response(response.body, {
-          status: response.status,
-          headers: resHeaders
-        });
-      }
-    }
-
-    return response;
+  // 4. 处理重定向（防止登录或跳转时跳回原始 .hana.ondemand.com 域名）
+  const resHeaders = new Headers(response.headers);
+  const location = resHeaders.get("Location");
+  if (location && location.includes(targetHost)) {
+    resHeaders.set("Location", location.replace(targetHost, url.host));
   }
-};
+
+  // 5. 允许跨域（如果是导航站可能需要调用一些 API）
+  resHeaders.set("Access-Control-Allow-Origin", "*");
+
+  return new Response(response.body, {
+    status: response.status,
+    headers: resHeaders
+  });
+}
