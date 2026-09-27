@@ -1,49 +1,47 @@
 export async function onRequest(context) {
-  const url = new URL(context.request.url);
+  const request = context.request;
+  const url = new URL(request.url);
   const targetHost = "my-render-nezha.onrender.com";
 
-  // 1. 处理 WebSocket / 双向升级连接（哪吒面板实时数据传输的关键）
-  const upgradeHeader = context.request.headers.get("Upgrade");
+  // 1. 判断是否为 WebSocket 握手请求
+  const upgradeHeader = request.headers.get("Upgrade");
   if (upgradeHeader && upgradeHeader.toLowerCase() === "websocket") {
-    // 将 ws:// 或 wss:// 指向 Render
-    const wsUrl = `wss://${targetHost}${url.pathname}${url.search}`;
+    // 构造发往 Render 源站的 WebSocket URL (https -> wss)
+    const targetWsUrl = `wss://${targetHost}${url.pathname}${url.search}`;
     
-    const wsHeaders = new Headers(context.request.headers);
-    wsHeaders.set("Host", targetHost);
-    wsHeaders.set("Referer", `https://${targetHost}/`);
+    // 复制请求头并重写 Host
+    const newHeaders = new Headers(request.headers);
+    newHeaders.set("Host", targetHost);
+    newHeaders.set("Referer", `https://${targetHost}/`);
 
-    // 直接透传 WebSocket 请求
-    return fetch(wsUrl, {
-      method: context.request.method,
-      headers: wsHeaders,
-      body: context.request.body
+    // 直接使用 fetch 处理 WebSocket 升级请求，Cloudflare 会自动进行 WebSocket 代理转发
+    return fetch(targetWsUrl, {
+      method: request.method,
+      headers: newHeaders,
+      body: request.body
     });
   }
 
-  // 2. 构造 HTTP/HTTPS 转发请求
+  // 2. 普通 HTTP/HTTPS 请求转发
   const targetUrl = `https://${targetHost}${url.pathname}${url.search}`;
 
-  // 复制请求头，并彻底清理干扰 Header
-  const newHeaders = new Headers(context.request.headers);
+  const newHeaders = new Headers(request.headers);
   newHeaders.set("Host", targetHost);
   newHeaders.set("Referer", `https://${targetHost}/`);
 
-  // 删除容易引起死锁和连接挂起的代理标头
-  const headersToRemove = [
-    "cf-connecting-ip", "cf-ray", "cf-visitor", "cf-ipcountry",
-    "x-forwarded-proto", "x-real-ip", "connection", "keep-alive"
-  ];
-  headersToRemove.forEach(h => newHeaders.delete(h));
+  // 清理可能导致冲突的标头
+  newHeaders.delete("cf-connecting-ip");
+  newHeaders.delete("cf-ray");
+  newHeaders.delete("cf-visitor");
 
   const fetchOptions = {
-    method: context.request.method,
+    method: request.method,
     headers: newHeaders,
     redirect: "manual"
   };
 
-  // 仅在非 GET/HEAD 请求时透传请求体
-  if (!["GET", "HEAD"].includes(context.request.method)) {
-    fetchOptions.body = context.request.body;
+  if (!["GET", "HEAD"].includes(request.method)) {
+    fetchOptions.body = request.body;
     fetchOptions.duplex = "half";
   }
 
@@ -51,14 +49,13 @@ export async function onRequest(context) {
     const response = await fetch(targetUrl, fetchOptions);
 
     const resHeaders = new Headers(response.headers);
-
-    // 重写 Location 响应标头，防止重定向跳回 .onrender.com
+    
+    // 重写 Location 防止重定向跳回 onrender.com
     const location = resHeaders.get("Location");
     if (location && location.includes(targetHost)) {
       resHeaders.set("Location", location.replace(targetHost, url.host));
     }
 
-    // CORS 支持
     resHeaders.set("Access-Control-Allow-Origin", "*");
     resHeaders.set("Access-Control-Allow-Credentials", "true");
 
